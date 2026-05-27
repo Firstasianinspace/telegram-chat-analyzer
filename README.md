@@ -77,7 +77,7 @@ From `package.json`:
 - `test:run` - run Vitest once
 - `ci` - lint + unit tests + build
 
-## Gitflow Rules
+## Branching Rules (main-only)
 
 This repository uses a main-only workflow with `main` as the integration and production branch.
 
