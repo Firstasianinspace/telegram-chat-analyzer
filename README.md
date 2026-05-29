@@ -2,7 +2,7 @@
 
 Telegram chat analysis app built with Vue 3 + TypeScript. Data is processed in the browser and stored in IndexedDB.
 
-[Demo](https://chat-analyzer-drab.vercel.app)
+[Demo](https://chat-analyzer-coral.vercel.app/)
 
 ## Current App Surface
 
