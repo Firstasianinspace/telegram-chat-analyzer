@@ -35,6 +35,7 @@ test.json
 .vscode
 .github/*
 .agents/*
+.vercel
 !.github/workflows/
 .vscode
 .idea
