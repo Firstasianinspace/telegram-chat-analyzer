@@ -34,6 +34,7 @@ test.json
 # Editor directories and files
 .vscode
 .github/*
+.agents/*
 !.github/workflows/
 .vscode
 .idea
