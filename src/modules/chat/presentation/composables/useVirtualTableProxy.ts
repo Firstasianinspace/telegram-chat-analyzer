@@ -9,7 +9,7 @@ import { CHAT_QUERY_STRATEGY_KEY } from '@/modules/chat/application/chatReposito
 
 export interface UseVirtualTableProxyOptions {
   table: Table<ChatMessage>;
-  messageType?: MessageType;
+  messageType?: MessageType[];
   pageSize?: number;
   maxCachedPages?: number;
   prefetchPages?: number;
