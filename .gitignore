@@ -43,3 +43,4 @@ test.json
 *.njsproj
 *.sln
 *.sw?
+.vercel
