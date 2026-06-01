@@ -9,6 +9,7 @@
 
 import type { ChatRepository, MessageQueryParameters, PaginatedResult } from '@/modules/chat/domain/interfaces/IChatRepository';
 import type { ChatMessage, ChatParticipant } from '@/modules/chat/domain/entities/types';
+import queryWorkerUrl from '@/modules/chat/infrastructure/workers/query.worker?worker&url';
 import {
   database as db,
   prepareForStorage,
@@ -50,8 +51,7 @@ export class IndexedDBChatRepository implements ChatRepository {
   private createHybridStrategy(): HybridQueryStrategy {
     const directStrategy = this.createDirectStrategy();
 
-    const workerUrl = new URL('@/modules/chat/infrastructure/workers/query.worker.ts', import.meta.url).href;
-    this.workerStrategy = new WorkerQueryStrategy(workerUrl);
+    this.workerStrategy = new WorkerQueryStrategy(queryWorkerUrl);
 
     return new HybridQueryStrategy(directStrategy, this.workerStrategy);
   }

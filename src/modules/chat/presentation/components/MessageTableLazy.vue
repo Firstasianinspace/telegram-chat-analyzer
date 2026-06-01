@@ -245,9 +245,10 @@ watch(
     filterControls.minLength.value = undefined;
     filterControls.maxLength.value = undefined;
 
+    // Clear previous table state before applying route-driven filters.
+    resetTable();
     filterControls.selectedTypes.value = messageType ? [...messageType] : [];
     filterControls.syncToTable(table);
-    resetTable();
     reloadProxy();
   }
 );
