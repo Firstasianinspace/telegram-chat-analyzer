@@ -267,7 +267,6 @@ watch(
     // handler reading a stale `messageType`, right before the reload that
     // was supposed to fetch the *filtered* rows).
     filterControls.syncToTable(table);
-    resetTable();
     reloadProxy();
   }
 );

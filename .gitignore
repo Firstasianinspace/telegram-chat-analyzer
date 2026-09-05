@@ -34,6 +34,8 @@ test.json
 # Editor directories and files
 .vscode
 .github/*
+.agents/*
+.vercel
 !.github/workflows/
 .vscode
 .idea
@@ -43,3 +45,4 @@ test.json
 *.njsproj
 *.sln
 *.sw?
+.vercel
