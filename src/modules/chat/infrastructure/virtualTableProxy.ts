@@ -146,6 +146,25 @@ export class VirtualTableDataProxy {
   private static readonly SEED_MAP_THRESHOLD = 500;
   // ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Bumped by clearCache() (i.e. on every filter/sort change).  loadPage()
+   * captures this value before starting a fetch and re-checks it after the
+   * awaited load resolves — if it no longer matches, the fetch was started
+   * under a superseded filter state and must NOT be written into pageCache.
+   *
+   * Without this, a page load kicked off just before a filter change can
+   * resolve just after the corresponding clearCache(), silently writing
+   * stale (wrong-filter) rows into the fresh cache. Because a cache HIT
+   * looks identical to a correct one to every future caller, that page
+   * index would then serve wrong data indefinitely until the next
+   * clearCache() — the underlying cause of the "filtered count is right
+   * but visible rows aren't" bug.
+   */
+  private cacheGeneration = 0;
+
+  /** Serializes updateFilters() calls — see its doc comment. */
+  private updateQueue: Promise<void> = Promise.resolve();
+
   // Statistics
   private stats = {
     cacheHits: 0,
@@ -174,10 +193,28 @@ export class VirtualTableDataProxy {
   /**
    * Update filters and refresh count.
    *
-   * Also starts building the seed map in the background so that deep-page
-   * fetches can use keyset pagination (anyOf) instead of offset scans.
+   * Serialized via updateQueue: MessageTableLazy has several independent
+   * reactive triggers that can each call this (mount, prop sync, debounced
+   * column-filter watch, rapid consecutive user filter changes), and
+   * overlapping calls would otherwise race on the shared
+   * currentFilters/seedMap/totalCount fields below — e.g. call A reads
+   * `this.currentFilters` while call B is mid-flight installing a different
+   * value, so a page load issued "under" call A can end up executing
+   * against call B's filters, or vice versa. Chaining onto updateQueue
+   * guarantees calls run strictly one at a time, in the order they were
+   * made, so each one observes a consistent, unmutated view of this
+   * instance's filter state for its entire duration.
    */
   async updateFilters(filters: Omit<MessageQueryParameters, 'offset' | 'limit'>): Promise<void> {
+    const run = this.updateQueue.then(() => this.applyFilters(filters));
+    // Keep the queue alive even if this call fails, so one rejected update
+    // doesn't permanently wedge every subsequent call behind it. The error
+    // itself still propagates normally to this call's own caller via `run`.
+    this.updateQueue = run.catch(() => { /* keep the queue alive; see comment above */ });
+    return run;
+  }
+
+  private async applyFilters(filters: Omit<MessageQueryParameters, 'offset' | 'limit'>): Promise<void> {
     const filtersChanged = JSON.stringify(filters) !== JSON.stringify(this.currentFilters);
 
     if (filtersChanged) {
@@ -273,25 +310,34 @@ export class VirtualTableDataProxy {
     const endPage = Math.floor(clampedEnd / this.options.pageSize);
 
     // Load all required pages concurrently, tracking cache hits/misses.
-    const pagePromises: Promise<ChatMessage[]>[] = [];
+    // Results are collected from the resolved values below (not re-read
+    // from pageCache afterwards) so that a page whose load was discarded
+    // as stale by loadPage() — see cacheGeneration — still returns its
+    // (locally awaited, correctly-filtered-at-fetch-time) data to *this*
+    // caller instead of silently vanishing because the cache write skipped.
+    const pagesByIndex = new Map<number, ChatMessage[]>();
+    const pagePromises: Promise<void>[] = [];
     for (let p = startPage; p <= endPage; p++) {
-      if (this.pageCache.has(p)) {
+      const cachedPage = this.pageCache.get(p);
+      if (cachedPage) {
         this.stats.cacheHits++;
-        pagePromises.push(Promise.resolve(this.pageCache.get(p)!));
+        pagesByIndex.set(p, cachedPage);
         continue;
       }
 
       this.stats.cacheMisses++;
-      pagePromises.push(this.loadPage(p));
+      pagePromises.push(this.loadPage(p).then((page) => {
+        pagesByIndex.set(p, page);
+      }));
     }
     await Promise.all(pagePromises);
 
-    // Collect items from the now-warm cache.
+    // Collect items from the resolved pages.
     const items: ChatMessage[] = [];
     for (let index = startIndex; index <= clampedEnd; index++) {
       const pageIndex = Math.floor(index / this.options.pageSize);
       const indexInPage = index % this.options.pageSize;
-      const page = this.pageCache.get(pageIndex);
+      const page = pagesByIndex.get(pageIndex);
       if (page) {
         const item = page[indexInPage];
         if (item !== undefined) items.push(item);
@@ -316,17 +362,36 @@ export class VirtualTableDataProxy {
       return metadata.loadPromise;
     }
 
-    // Start loading
+    // Start loading. Capture the generation now so a filter/sort change
+    // (clearCache()) that happens while this fetch is in flight can be
+    // detected once it resolves.
+    const requestGeneration = this.cacheGeneration;
     const loadPromise = this.executePageLoad(pageIndex);
     this.pageMetadata.set(pageIndex, { loading: true, loadPromise });
 
     try {
       const page = await loadPromise;
+
+      // A newer clearCache() ran while this load was in flight — this
+      // result reflects a superseded filter/sort state. Discard it rather
+      // than writing it into pageCache, where it would be indistinguishable
+      // from a valid cache hit and would keep serving stale rows for this
+      // page index until the next filter change.
+      if (requestGeneration !== this.cacheGeneration) {
+        this.pageMetadata.delete(pageIndex);
+        return page;
+      }
+
       this.pageCache.set(pageIndex, page);
       this.pageMetadata.set(pageIndex, { loading: false });
       this.stats.pagesLoaded++;
       return page;
     } catch (error) {
+      if (requestGeneration !== this.cacheGeneration) {
+        this.pageMetadata.delete(pageIndex);
+        throw error;
+      }
+
       this.pageMetadata.set(pageIndex, {
         loading: false,
         error: error instanceof Error ? error : new Error('Failed to load page'),
@@ -430,7 +495,10 @@ export class VirtualTableDataProxy {
   clearCache(): void {
     this.pageCache.clear();
     this.pageMetadata.clear();
-    // Bump generation so any in-flight seed-map build discards its result.
+    // Bump generations so any in-flight seed-map build or page load
+    // discards its result instead of writing stale data into the fresh
+    // cache (see cacheGeneration / seedMapGeneration doc comments).
+    this.cacheGeneration++;
     this.seedMapGeneration++;
     this.seedMap = undefined;
     this.seedMapPromise = undefined;

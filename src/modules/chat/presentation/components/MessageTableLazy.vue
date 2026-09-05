@@ -113,7 +113,16 @@ watch(
   () => {
     filterControls.syncToTable(table);
   },
-  { deep: true }
+  // immediate: the watch() above (messageType -> filterControls.selectedTypes)
+  // runs immediate:true and mutates selectedTypes synchronously during setup,
+  // *before* this watcher is even registered — so without immediate here,
+  // this watcher's baseline already reflects that mutated value and never
+  // sees it as a "change", meaning table.setColumnFilters() would never run
+  // for the initial mount state. onMounted's reload() would then read an
+  // empty columnFilters and fetch unfiltered data, racing with the later
+  // reload that eventually applies the real filter (see virtualTableProxy.ts
+  // cacheGeneration comments for what that race corrupts).
+  { deep: true, immediate: true }
 );
 
 
@@ -245,7 +254,18 @@ watch(
     filterControls.minLength.value = undefined;
     filterControls.maxLength.value = undefined;
 
-    filterControls.selectedTypes.value = messageType ? [...messageType] : [];
+    // selectedTypes is deliberately NOT re-derived from `messageType` here.
+    // The dedicated `watch(() => messageType, ...)` above already owns that
+    // sync and reacts directly to the prop, which Vue orders correctly
+    // relative to this component's own re-render. This route.fullPath
+    // watcher fires from vue-router's independent reactive state, with no
+    // ordering guarantee relative to the parent propagating a freshly
+    // recomputed `messageType` prop down — reading it here could observe a
+    // one-tick-stale value and clobber a type filter that was just correctly
+    // applied a moment earlier (this raced in practice: a `sticker` filter
+    // set by the prop watcher was overwritten back to "all types" by this
+    // handler reading a stale `messageType`, right before the reload that
+    // was supposed to fetch the *filtered* rows).
     filterControls.syncToTable(table);
     resetTable();
     reloadProxy();
