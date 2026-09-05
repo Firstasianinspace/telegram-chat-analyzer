@@ -42,19 +42,23 @@ export function buildCollection(
   if ((dateFrom || dateTo) && singleType) {
     const from = dateFrom ?? new Date('1970-01-01');
     const to = dateTo ?? new Date('2099-12-31');
+    // [type+timestamp], NOT [timestamp+type]: the fixed value (type) must
+    // lead the compound key for `.between()` to scope by it — see the
+    // version(5) comment in core/database/schema.ts.
     return messagesTable
-      .where('[timestamp+type]')
+      .where('[type+timestamp]')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Dexie Collection type cast
-      .between([from, singleType], [to, singleType], true, true) as unknown as Collection<ChatMessage, any>;
+      .between([singleType, from], [singleType, to], true, true) as unknown as Collection<ChatMessage, any>;
   }
 
   if ((dateFrom || dateTo) && fromId) {
     const from = dateFrom ?? new Date('1970-01-01');
     const to = dateTo ?? new Date('2099-12-31');
+    // [fromId+timestamp], NOT [timestamp+fromId] — same reasoning as above.
     return messagesTable
-      .where('[timestamp+fromId]')
+      .where('[fromId+timestamp]')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Dexie Collection type cast
-      .between([from, fromId], [to, fromId], true, true) as unknown as Collection<ChatMessage, any>;
+      .between([fromId, from], [fromId, to], true, true) as unknown as Collection<ChatMessage, any>;
   }
 
   if (dateFrom || dateTo) {
@@ -84,8 +88,29 @@ export function buildCollection(
 
 /**
  * Apply in-memory predicates to a Dexie collection for filters that cannot be
- * satisfied by an index (e.g. full-text search, secondary equality checks after
- * a compound-index query has already narrowed the result set).
+ * safely assumed to already be satisfied by whichever index built it.
+ *
+ * IMPORTANT: this always re-applies `type` and `fromId` (when present) rather
+ * than trying to detect whether a compound index already scoped them.
+ *
+ * buildCollection/buildTimestampOrderedCollection now use [type+timestamp]/
+ * [fromId+timestamp] (fixed value leading, ranged value trailing), which
+ * *are* correctly scoped by a `.between()` range — see the version(5)
+ * comment in core/database/schema.ts. An earlier version of both functions
+ * used [timestamp+type]/[timestamp+fromId] (ranged value leading, fixed
+ * value trailing), which is NOT correctly scoped: for any row whose
+ * timestamp falls strictly between the range bounds, the trailing
+ * type/fromId component is completely unconstrained (IndexedDB compares
+ * compound keys lexicographically), so the query silently matched every
+ * type/sender for nearly the whole range — correct total count, since count
+ * queries took a different, correctly-scoped path, but wrong actual rows.
+ *
+ * The indexes are fixed now, but this function still always re-applies the
+ * filter rather than trusting the caller's index choice: it costs nothing
+ * when the collection is already correctly scoped (the predicate is
+ * trivially true for every row, evaluated during the same cursor scan Dexie
+ * already performs), and it means a *future* branch that picks the wrong
+ * index order can't reintroduce this exact bug silently.
  */
 
 export function applyInMemoryFilters(
@@ -94,29 +119,18 @@ export function applyInMemoryFilters(
   parameters: Omit<MessageQueryParameters, 'offset' | 'limit'>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Dexie Collection key-type incompatibility
 ): Collection<ChatMessage, any> {
-  const { type, fromId, dateFrom, dateTo, searchText } = parameters;
+  const { type, fromId, searchText } = parameters;
 
   const typeArray = normalizeTypeArray(type);
 
   let filtered = collection;
 
-  const usedCompoundIndex = (dateFrom || dateTo) && (typeArray || fromId);
-
-  if (!usedCompoundIndex) {
-    const needsTypeFilter = (dateFrom || dateTo) && typeArray && typeArray.length > 0;
-    if (needsTypeFilter) {
-      filtered = filtered.filter((message) => typeArray.includes(message.type));
-    }
-
-    const needsFromIdFilter = (dateFrom || dateTo || typeArray) && fromId;
-    if (needsFromIdFilter) {
-      filtered = filtered.filter((message) => message.fromId === fromId);
-    }
+  if (typeArray && typeArray.length > 0) {
+    filtered = filtered.filter((message) => typeArray.includes(message.type));
   }
 
-  if (usedCompoundIndex && typeArray && typeArray.length > 1) {
-    // Compound index only handles a single type value; filter the rest in memory
-    filtered = filtered.filter((message) => typeArray.includes(message.type));
+  if (fromId) {
+    filtered = filtered.filter((message) => message.fromId === fromId);
   }
 
   if (searchText) {
@@ -157,11 +171,12 @@ export function requiresInMemorySort(parameters: Omit<MessageQueryParameters, 'o
  * table\u2019s visible sort order.
  *
  * Index selection priority (so no full-record reads are required):
- *   1. [timestamp+type]  \u2014 date-range + single type
- *   2. [timestamp+type]  \u2014 single type only (full date span)
- *   3. [timestamp+fromId] \u2014 date-range + fromId
- *   4. timestamp         \u2014 date-range only
- *   5. timestamp (orderBy) \u2014 no indexed filter (multi-type uses in-memory .filter())
+ *   1. [type+timestamp]   \u2014 single type (date-range or full span) \u2014 type leads
+ *      so the range is scoped to that type; the trailing timestamp still
+ *      gives timestamp-ordered iteration within it.
+ *   2. [fromId+timestamp] \u2014 date-range + fromId, same reasoning
+ *   3. timestamp          \u2014 date-range only
+ *   4. timestamp (orderBy) \u2014 no indexed filter (multi-type uses in-memory .filter())
  */
 
 export function buildTimestampOrderedCollection(
@@ -178,18 +193,21 @@ export function buildTimestampOrderedCollection(
 
 
   if (singleType) {
-    // [timestamp+type] compound index \u2014 gives timestamp ordering for a fixed type
+    // [type+timestamp]: type leads so the range is actually scoped to that
+    // type (not just "every type, ordered such that this type's rows for
+    // the boundary timestamps happen to be included") \u2014 the trailing
+    // timestamp component still gives timestamp-ordered iteration within it.
     return messagesTable
-      .where('[timestamp+type]')
+      .where('[type+timestamp]')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Dexie Collection type cast
-      .between([from, singleType], [to, singleType], true, true) as unknown as Collection<ChatMessage, any>;
+      .between([singleType, from], [singleType, to], true, true) as unknown as Collection<ChatMessage, any>;
   }
 
   if (fromId && (dateFrom || dateTo)) {
     return messagesTable
-      .where('[timestamp+fromId]')
+      .where('[fromId+timestamp]')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Dexie Collection type cast
-      .between([from, fromId], [to, fromId], true, true) as unknown as Collection<ChatMessage, any>;
+      .between([fromId, from], [fromId, to], true, true) as unknown as Collection<ChatMessage, any>;
   }
 
   if (dateFrom || dateTo) {

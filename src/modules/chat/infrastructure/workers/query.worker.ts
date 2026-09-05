@@ -83,6 +83,25 @@ class WorkerChatDatabase extends Dexie {
       dailyHourlyCounts: 'id, date, hour, [date+hour], dayOfWeek',
       senderTotalCounts: 'fromId',
     });
+
+    // v5 — [timestamp+type]/[timestamp+fromId] replaced with
+    // [type+timestamp]/[fromId+timestamp] (leading key swapped). See the
+    // matching version(5) comment in core/database/schema.ts for the full
+    // explanation: a compound-index `.between()` range only correctly
+    // scopes on its LEADING component, and the old ordering put the ranged
+    // value (timestamp) first and the fixed value (type/fromId) second,
+    // which silently matched every type/sender for nearly the whole range.
+    this.version(5).stores({
+      messages:
+        'id, fromId, type, timestamp, date, hour, '
+        + '[date+fromId], [date+hour], [date+type], '
+        + '[type+timestamp], [fromId+timestamp], '
+        + 'dayOfWeek, [timestamp+id]',
+      participants: 'id, name',
+      dailySenderCounts: 'id, date, fromId, [date+fromId]',
+      dailyHourlyCounts: 'id, date, hour, [date+hour], dayOfWeek',
+      senderTotalCounts: 'fromId',
+    });
   }
 }
 

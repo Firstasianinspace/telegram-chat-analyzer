@@ -293,6 +293,42 @@ class ChatDatabase extends Dexie {
       dailyHourlyCounts: 'id, date, hour, [date+hour], dayOfWeek',
       senderTotalCounts: 'fromId',
     });
+
+    // Version 5: Replace [timestamp+type]/[timestamp+fromId] with
+    // [type+timestamp]/[fromId+timestamp] — leading key swapped.
+    //
+    // For a compound index [A+B], a `.between([a,b1],[a,b2])` range with a
+    // FIXED leading value `a` is a correct, tightly-scoped index scan: it
+    // visits exactly the rows where A===a, ordered by B. But
+    // [timestamp+type] put the *ranged* value (timestamp) first and the
+    // *fixed* value (type) second — `.between([from,'sticker'],[to,'sticker'])`
+    // — which does NOT work the same way: for any timestamp strictly between
+    // `from` and `to`, the trailing `type` component is completely
+    // unconstrained (IndexedDB compares compound keys lexicographically, so
+    // once the leading component already satisfies the range, the trailing
+    // component doesn't need to match anything to be "in range"). That
+    // query silently visited nearly every row regardless of type, only
+    // relying on an in-memory `.filter()` afterward for correctness — a full
+    // scan with a defensive filter, not an index-scoped one.
+    //
+    // [type+timestamp] flips this: type (few distinct values, used as an
+    // equality match) leads, timestamp (the ranged value) trails. Now
+    // `.between(['sticker',from],['sticker',to])` visits only rows where
+    // type==='sticker', in timestamp order within that range — both
+    // correctly scoped *and* fast, and still gives the timestamp ordering
+    // buildTimestampOrderedCollection's seed-map fast path needs. Same
+    // reasoning for fromId → [fromId+timestamp].
+    this.version(5).stores({
+      messages:
+        'id, fromId, type, timestamp, date, hour, '
+        + '[date+fromId], [date+hour], [date+type], '
+        + '[type+timestamp], [fromId+timestamp], '
+        + 'dayOfWeek, [timestamp+id]',
+      participants: 'id, name',
+      dailySenderCounts: 'id, date, fromId, [date+fromId]',
+      dailyHourlyCounts: 'id, date, hour, [date+hour], dayOfWeek',
+      senderTotalCounts: 'fromId',
+    });
   }
 }
 
