@@ -22,8 +22,19 @@ const {
   toggleAll,
 } = useMessageTableSession();
 
+// True once the initial checkHasData() has resolved. Gates the onboarding
+// screen so a large existing database (checkHasData() takes noticeably
+// longer at 1M+ rows) doesn't cause a flash of "no data, please upload"
+// before self-correcting — which could otherwise prompt a user to
+// re-upload/re-generate on top of data that was there all along.
+const isInitialCheckDone = ref(false);
+
 onMounted(async () => {
-  await chatStore.checkHasData();
+  try {
+    await chatStore.checkHasData();
+  } finally {
+    isInitialCheckDone.value = true;
+  }
 });
 
 // Toggle to show/hide mock generator panel when data is already loaded
@@ -56,13 +67,20 @@ function openGenerator(): void {
 
 <template>
   <div class="page-messages">
+    <!-- Initial data check in progress — avoids flashing the onboarding
+         screen before we know whether a database already exists. -->
+    <div v-if="!isInitialCheckDone" class="initial-check">
+      <i class="pi pi-spin pi-spinner" />
+      <span>{{ t("common.loading") }}</span>
+    </div>
+
     <!--
       Onboarding grid — visible only when there is no data AND the main content
       area hasn't been activated yet.  MockDataGeneratorCard deliberately lives
       in messages-content only (stable mount point) so its composable + worker
       survive any reactive toggle of hasData.
     -->
-    <div v-if="!showMainContent" class="onboarding-grid">
+    <div v-else-if="!showMainContent" class="onboarding-grid">
       <FileUploadCard />
 
       <!-- Shortcut card: opens the full generator in messages-content -->
@@ -85,7 +103,7 @@ function openGenerator(): void {
       Keeping this alive for the whole session ensures the stable
       MockDataGeneratorCard instance (and its worker) is never torn down.
     -->
-    <div v-if="showMainContent" class="messages-content">
+    <div v-else-if="showMainContent" class="messages-content">
       <!-- Collapsible mock generator panel toggle -->
       <div class="mock-generator-toggle">
         <Button :icon="showMockGenerator ? 'pi pi-chevron-up' : 'pi pi-database'" :label="t('mockData.title')"
@@ -132,6 +150,15 @@ function openGenerator(): void {
 .page-messages {
   padding: 1rem;
   height: 100%;
+}
+
+.initial-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 3rem;
+  color: var(--text-color-secondary);
 }
 
 /* Two-column onboarding grid (upload | mock generator shortcut) */
